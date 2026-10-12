@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Image Pipeline</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f6f5f1; --surface: #ffffff; --ink: #1b1d1f; --muted: #6b6f74; --line: #e3e1db;
+      --accent: #d9620f; --accent-ink: #ffffff; --ok: #1f7a4d; --err: #b3261e; --radius: 12px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #121314; --surface: #1b1d1f; --ink: #ecebe7; --muted: #9a9ea3; --line: #2c2f33;
+              --accent: #f08a3c; --accent-ink: #121314; --ok: #5cc28d; --err: #ff8a80; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.55 Inter, system-ui, sans-serif; }
+    main { max-width: 1040px; margin: 0 auto; padding: 40px 16px 64px; }
+    header h1 { font-size: 28px; margin: 0 0 4px; letter-spacing: -0.02em; }
+    header p { margin: 0; color: var(--muted); }
+    .flow { font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--muted); margin-top: 10px; }
+    .drop { margin: 28px 0 12px; border: 2px dashed var(--line); border-radius: var(--radius); background: var(--surface);
+            padding: 36px 16px; text-align: center; cursor: pointer; transition: border-color .15s, background .15s; }
+    .drop.over, .drop:hover { border-color: var(--accent); }
+    .drop strong { color: var(--accent); }
+    .drop small { display: block; color: var(--muted); margin-top: 6px; }
+    #jobs { display: grid; gap: 8px; margin-bottom: 32px; }
+    .job { display: flex; justify-content: space-between; gap: 12px; align-items: center; background: var(--surface);
+           border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; font-size: 14px; }
+    .job .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge { font-family: "JetBrains Mono", monospace; font-size: 11px; padding: 3px 8px; border-radius: 99px;
+             border: 1px solid var(--line); white-space: nowrap; }
+    .badge.COMPLETED { color: var(--ok); border-color: currentColor; }
+    .badge.FAILED, .badge.REJECTED, .badge.ERROR { color: var(--err); border-color: currentColor; }
+    .bar { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+    .bar h2 { font-size: 18px; margin: 0; }
+    button.link { background: none; border: 0; color: var(--accent); font: inherit; cursor: pointer; padding: 0; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
+    .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+    .card a { display: block; aspect-ratio: 1; background: var(--line); }
+    .card img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .card .meta { padding: 8px 10px; font-size: 12px; color: var(--muted); }
+    .card .meta b { color: var(--ink); font-weight: 500; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .empty { color: var(--muted); padding: 24px 0; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Serverless Image Pipeline</h1>
+    <p>Upload an image. It is validated, resized, watermarked and catalogued by an event-driven AWS workflow.</p>
+    <div class="flow">API Gateway → S3 → SQS → Lambda → Step Functions → S3 / DynamoDB → CloudFront</div>
+  </header>
+
+  <label class="drop" id="drop">
+    <input type="file" id="file" accept="image/jpeg,image/png,image/webp,image/gif" multiple hidden />
+    <strong>Choose images</strong> or drop them here
+    <small>JPEG, PNG, WebP or GIF · up to 10 MB each</small>
+  </label>
+  <div id="jobs"></div>
+
+  <div class="bar">
+    <h2>Processed images</h2>
+    <button class="link" id="refresh">Refresh</button>
+  </div>
+  <div class="grid" id="gallery"></div>
+</main>
+
+<script src="config.js"></script>
+<script>
+  const API = (window.APP_CONFIG && window.APP_CONFIG.apiUrl || "").replace(/\/$/, "");
+  const $ = (id) => document.getElementById(id);
+
+  function jobRow(name) {
+    const row = document.createElement("div");
+    row.className = "job";
+    row.innerHTML = `<span class="name"></span><span class="badge">REQUESTING_URL</span>`;
+    row.querySelector(".name").textContent = name;
+    $("jobs").prepend(row);
+    return (status) => { const b = row.querySelector(".badge"); b.textContent = status; b.className = "badge " + status; };
+  }
+
+  async function upload(file) {
+    const setStatus = jobRow(file.name);
+    try {
+      const res = await fetch(`${API}/uploads`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ filename: file.name, contentType: file.type }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message || res.status);
+
+      setStatus("UPLOADING");
+      const form = new FormData();
+      Object.entries(data.upload.fields).forEach(([k, v]) => form.append(k, v));
+      form.append("file", file);  // must be the last field
+      const s3 = await fetch(data.upload.url, { method: "POST", body: form });
+      if (!s3.ok) throw new Error("S3 rejected the upload (" + s3.status + ")");
+
+      setStatus("QUEUED");
+      await poll(data.imageId, setStatus);
+    } catch (err) {
+      console.error(err);
+      setStatus("ERROR");
+    }
+  }
+
+  async function poll(imageId, setStatus) {
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const res = await fetch(`${API}/images/${imageId}`);
+      if (!res.ok) continue;
+      const item = await res.json();
+      if (item.status !== "PENDING_UPLOAD") setStatus(item.status);
+      if (["COMPLETED", "FAILED", "REJECTED"].includes(item.status)) {
+        if (item.status === "COMPLETED") loadGallery();
+        return;
+      }
+    }
+  }
+
+  async function loadGallery() {
+    const res = await fetch(`${API}/images?limit=48`);
+    const { items = [] } = await res.json();
+    const grid = $("gallery");
+    grid.innerHTML = items.length ? "" : `<div class="empty">Nothing processed yet.</div>`;
+    for (const it of items) {
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `<a target="_blank" rel="noopener"><img loading="lazy" alt=""></a><div class="meta"><b></b><span></span></div>`;
+      card.querySelector("a").href = "/" + it.fullResKey;
+      card.querySelector("img").src = "/" + it.thumbnailKey;
+      card.querySelector("img").alt = it.originalFilename || "";
+      card.querySelector("b").textContent = it.originalFilename || it.imageId;
+      card.querySelector("span").textContent = `${it.width}×${it.height} · ${it.format} · ${(it.sizeBytes / 1024).toFixed(0)} KB`;
+      grid.append(card);
+    }
+  }
+
+  $("file").addEventListener("change", (e) => [...e.target.files].forEach(upload));
+  const drop = $("drop");
+  ["dragenter", "dragover"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((t) => drop.addEventListener(t, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => [...e.dataTransfer.files].filter((f) => f.type.startsWith("image/")).forEach(upload));
+  $("refresh").addEventListener("click", loadGallery);
+  loadGallery();
+</script>
+</body>
+</html>

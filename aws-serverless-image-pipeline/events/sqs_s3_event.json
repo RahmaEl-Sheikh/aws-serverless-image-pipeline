@@ -1,0 +1,8 @@
+{
+  "Records": [
+    {
+      "messageId": "example-message-1",
+      "body": "{\"Records\":[{\"eventName\":\"ObjectCreated:Post\",\"s3\":{\"bucket\":{\"name\":\"image-pipeline-source-123456789012\"},\"object\":{\"key\":\"uploads/0123456789abcdef0123456789abcdef/photo.jpg\",\"size\":204800,\"eTag\":\"abc123\"}}}]}"
+    }
+  ]
+}

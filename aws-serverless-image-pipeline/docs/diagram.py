@@ -1,4 +1,8 @@
-"""Generates docs/architecture.png  (pip install diagrams; requires Graphviz)."""
+"""Generates docs/architecture.png  (pip install diagrams; requires Graphviz).
+
+Layout is kept compact (few columns) with large fonts so the diagram stays
+readable when GitHub scales it down to the README width.
+"""
 from diagrams import Cluster, Diagram, Edge
 from diagrams.aws.compute import Lambda
 from diagrams.aws.database import Dynamodb
@@ -7,10 +11,25 @@ from diagrams.aws.management import Cloudwatch
 from diagrams.aws.network import APIGateway, CloudFront
 from diagrams.aws.storage import S3
 from diagrams.onprem.client import Users
-from diagrams.programming.language import Python
 
-graph_attr = {"fontsize": "22", "pad": "0.6", "nodesep": "0.7", "ranksep": "1.0", "splines": "spline"}
-node_attr = {"fontsize": "12"}
+FONT = "Helvetica-Bold"
+
+graph_attr = {
+    "fontsize": "44", "fontname": FONT, "labelloc": "t",
+    "pad": "0.4", "nodesep": "0.6", "ranksep": "1.0",
+    "splines": "spline", "dpi": "130",
+}
+# diagrams sets each node's height (1.9in for a one-line label); keeping the
+# icon 1.4in wide and pinned to the top leaves room for the label underneath.
+node_attr = {"fontsize": "22", "fontname": FONT, "width": "1.4",
+             "imagescale": "true", "imagepos": "tc", "labelloc": "b", "fixedsize": "true"}
+edge_attr = {"fontsize": "26", "fontname": FONT, "penwidth": "3.5", "arrowsize": "1.6", "color": "#3b4252"}
+cluster = {"fontsize": "28", "fontname": FONT, "margin": "22", "penwidth": "2"}
+
+
+def step(n, **extra):
+    return Edge(label=f"  {n}  ", fontcolor="#c2410c", fontsize="34", fontname=FONT, **extra)
+
 
 with Diagram(
     "Serverless Image Processing Pipeline",
@@ -19,57 +38,50 @@ with Diagram(
     direction="LR",
     graph_attr=graph_attr,
     node_attr=node_attr,
+    edge_attr=edge_attr,
 ):
-    users = Users("Users\n(browser)")
+    users = Users("Users")
 
-    with Cluster("Edge"):
-        cdn = CloudFront("CloudFront\n(OAC, HTTPS)")
+    with Cluster("API", graph_attr=cluster):
+        api = APIGateway("API Gateway")
+        upload_fn = Lambda("Upload URL")
 
-    with Cluster("API layer"):
-        api = APIGateway("HTTP API\nPOST /uploads\nGET /images")
-        presign = Lambda("UploadUrl\n(pre-signed POST)")
-        read_api = Lambda("ImagesApi\n(list / status)")
+    with Cluster("Ingestion", graph_attr=cluster):
+        source = S3("Source S3")
+        queue = SQS("SQS Queue")
+        dlq = SQS("DLQ")
 
-    with Cluster("Ingestion & decoupling"):
-        source = S3("Source bucket\nuploads/  (lifecycle 30d)")
-        queue = SQS("Upload queue")
-        dlq = SQS("Dead-letter queue\n(maxReceive 3)")
-        dispatcher = Lambda("Dispatcher\n(idempotent)")
+    dispatcher = Lambda("Dispatcher")
 
-    with Cluster("Step Functions - Standard workflow"):
-        sfn = StepFunctions("Image pipeline")
+    with Cluster("Step Functions Workflow", graph_attr=cluster):
+        sfn = StepFunctions("State Machine")
         validate = Lambda("Validate")
-        with Cluster("Parallel"):
-            resize = Lambda("Resize\n(thumbnail)")
-            watermark = Lambda("Watermark\n(full-res)")
-            meta = Lambda("Extract\nmetadata")
-        layer = Python("Pillow\nLambda Layer")
+        with Cluster("Parallel", graph_attr=cluster):
+            resize = Lambda("Resize")
+            watermark = Lambda("Watermark")
+            meta = Lambda("Metadata")
 
-    with Cluster("Storage & catalogue"):
-        processed = S3("Processed bucket\nimages/  (IA -> Glacier IR)")
-        web = S3("Web bucket\n(static frontend)")
-        table = Dynamodb("Images table\nGSI byStatus")
+    with Cluster("Storage", graph_attr=cluster):
+        processed = S3("Processed S3")
+        table = Dynamodb("DynamoDB")
 
-    with Cluster("Notifications & monitoring"):
-        sns = SNS("SNS topic\n(success / failure)")
-        cw = Cloudwatch("CloudWatch\nalarms + dashboard")
+    with Cluster("Delivery & Alerts", graph_attr={**cluster, "labelloc": "b"}):
+        cdn = CloudFront("CloudFront")
+        sns = SNS("SNS")
+        cw = Cloudwatch("CloudWatch")
 
-    users >> Edge(label="1  request upload URL") >> api
-    api >> presign >> Edge(style="dashed") >> table
-    users >> Edge(label="2  POST image (pre-signed)", color="darkorange") >> source
-    source >> Edge(label="3  ObjectCreated event") >> queue
-    queue >> Edge(label="4  poll (batch 10)") >> dispatcher
-    queue >> Edge(style="dashed", color="firebrick", label="failed x3") >> dlq
-    dispatcher >> Edge(label="5  StartExecution") >> sfn
+    users >> step(1, headport="w") >> api >> upload_fn
+    users >> step(2) >> source
+    source >> step(3) >> queue
+    queue >> Edge(style="dashed", color="#b91c1c") >> dlq
+    queue >> step(4, headport="w") >> dispatcher
+    dispatcher >> step(5) >> sfn
     sfn >> validate
-    sfn >> resize
-    sfn >> watermark
-    sfn >> meta
-    layer - Edge(style="dotted") - [resize, watermark]
-    [resize, watermark] >> Edge(label="6  write renditions") >> processed
-    sfn >> Edge(label="7  status + metadata (SDK integration)") >> table
-    sfn >> Edge(label="8  publish") >> sns
-    users >> Edge(label="9  view gallery", color="darkgreen") >> cdn
-    cdn >> [web, processed]
-    api >> read_api >> table
-    [dlq, sfn] >> Edge(style="dotted") >> cw >> Edge(style="dotted") >> sns
+    validate >> [resize, watermark, meta]
+    [resize, watermark] >> step(6) >> processed
+    sfn >> step(7) >> table
+    sfn >> step(8, headport="n", labelangle="0") >> sns
+    dlq >> Edge(style="dotted") >> cw
+    cw >> Edge(style="dotted") >> sns
+    processed >> step(9) >> cdn
+    cdn >> Edge(color="#15803d") >> users

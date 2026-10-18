@@ -34,7 +34,19 @@ Everything is defined as code with **AWS SAM / CloudFormation** and deploys with
 
 ![Solution architecture](docs/architecture.png)
 
-*Diagram generated as code with the [`diagrams`](https://diagrams.mingrammer.com/) library – source: [`docs/diagram.py`](docs/diagram.py).*
+| # | Step |
+|---|------|
+| 1 | Browser requests a pre-signed upload URL from API Gateway → Upload URL Lambda |
+| 2 | Browser uploads the image directly to the Source S3 bucket |
+| 3 | S3 `ObjectCreated` event is sent to the SQS queue (failures → DLQ) |
+| 4 | Dispatcher Lambda polls the queue |
+| 5 | Dispatcher starts a Step Functions execution |
+| 6 | Validate → Resize / Watermark / Metadata in parallel → results written to Processed S3 |
+| 7 | Status and metadata saved to DynamoDB |
+| 8 | Success / failure notification published to SNS |
+| 9 | Processed images served to users through CloudFront |
+
+*Click the diagram to view it full size. It is generated as code with the [`diagrams`](https://diagrams.mingrammer.com/) library – source: [`docs/diagram.py`](docs/diagram.py).*
 
 **Example output** (real output of the `watermark` and `resize` functions):
 

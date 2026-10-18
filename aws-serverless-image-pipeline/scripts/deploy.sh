@@ -52,4 +52,4 @@ echo
 echo "Done."
 echo "  Web app : $WEB_URL"
 echo "  API     : $API_URL"
-[[ -n "$EMAIL" ]] && echo "  Confirm the SNS subscription e-mail sent to $EMAIL."
+if [[ -n "$EMAIL" ]]; then echo "  Confirm the SNS subscription e-mail sent to $EMAIL."; fi
